@@ -1,0 +1,18 @@
+# Never cache this app. LiteSpeed (cPanel/Namecheap) caches aggressively by default,
+# which can replay stale session/auth state. Mirror the defenses from the prior project.
+
+# LiteSpeed: force no-cache via env
+<IfModule LiteSpeed>
+  RewriteEngine On
+  RewriteRule .* - [E=Cache-Control:no-cache]
+</IfModule>
+
+# Apache/LiteSpeed: explicit no-store headers
+<IfModule mod_headers.c>
+  Header set Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+  Header set Pragma "no-cache"
+  Header set X-LiteSpeed-Cache-Control "no-cache"
+</IfModule>
+
+# Friendly default doc
+DirectoryIndex index.html

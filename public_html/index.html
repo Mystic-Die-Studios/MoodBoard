@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MoodBoard</title>
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <!-- Passcode gate (shown until authed) -->
+  <div class="gate" id="gate" hidden>
+    <div class="card">
+      <h1 id="gateTitle">MoodBoard</h1>
+      <p>Enter the passcode to continue.</p>
+      <form id="gateForm">
+        <input type="password" id="passcode" placeholder="Passcode" autocomplete="current-password" autofocus>
+        <div class="err" id="gateErr"></div>
+        <button class="primary" type="submit">Enter</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="topbar">
+    <h1 id="appTitle">MoodBoard</h1>
+    <div class="spacer"></div>
+    <button id="newBtn" class="primary">+ New board</button>
+    <button id="logoutBtn" class="icon" title="Sign out">Sign out</button>
+  </div>
+
+  <div class="wrap">
+    <div class="grid" id="grid"></div>
+    <div class="empty hidden" id="empty">No boards yet — create your first one.</div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <script src="assets/gallery.js"></script>
+</body>
+</html>

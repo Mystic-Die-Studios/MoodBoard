@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MoodBoard — Editor</title>
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body class="editor">
+  <div class="toolbar">
+    <div class="group">
+      <button type="button" class="icon" id="backBtn" title="Back to gallery">&larr;</button>
+      <input type="text" class="title" id="title" placeholder="Board title">
+    </div>
+
+    <div class="group">
+      <label>Color <input type="color" id="color" value="#4d8bff"></label>
+      <label>Size <input type="range" id="size" min="1" max="80" value="6"></label>
+      <span class="status" id="sizeVal">6</span>
+    </div>
+
+    <div class="group">
+      <button type="button" class="icon" id="dupBtn" title="Duplicate (Ctrl+D)">Duplicate</button>
+      <button type="button" class="icon" id="forwardBtn" title="Bring forward">&uarr;</button>
+      <button type="button" class="icon" id="backwardBtn" title="Send back">&darr;</button>
+      <button type="button" class="icon danger" id="delBtn" title="Delete (Del)">Delete</button>
+    </div>
+
+    <div class="group">
+      <button type="button" class="icon" id="undoBtn" title="Undo (Ctrl+Z)">Undo</button>
+      <button type="button" class="icon" id="redoBtn" title="Redo (Ctrl+Shift+Z)">Redo</button>
+    </div>
+
+    <div class="group">
+      <span class="ttl">View</span>
+      <button type="button" class="icon" id="zoomOut" title="Zoom out">&minus;</button>
+      <button type="button" class="icon" id="zoomReset" title="Reset to 100%"><span id="zoomLabel">100%</span></button>
+      <button type="button" class="icon" id="zoomIn" title="Zoom in">+</button>
+      <button type="button" class="icon" id="zoomFit" title="Fit to content">Fit</button>
+      <button type="button" class="tool" id="snapToggle" title="Snap to alignment guides" aria-pressed="true">Snap</button>
+    </div>
+
+    <div class="group">
+      <button type="button" class="primary" id="saveBtn" title="Save (Ctrl+S)">Save</button>
+      <button type="button" class="icon" id="refreshBtn" title="Reload saved version">Refresh</button>
+      <span class="status" id="status"></span>
+    </div>
+  </div>
+
+  <div class="canvas-host" id="host">
+    <canvas id="c"></canvas>
+
+    <!-- Floating tool panel -->
+    <div class="left-panel" id="leftPanel">
+      <button type="button" class="ptool" id="toolSelect" title="Select / move (V)" aria-pressed="true">Select</button>
+      <button type="button" class="ptool" id="toolDraw" title="Freehand draw (D)">Draw</button>
+      <div class="sep"></div>
+      <button type="button" class="ptool" id="addText" title="Click to place text (T)">Text</button>
+      <button type="button" class="ptool" id="addRect" title="Click to place a rectangle">Rect</button>
+      <button type="button" class="ptool" id="addEllipse" title="Click to place an ellipse">Oval</button>
+      <button type="button" class="ptool" id="addTriangle" title="Click to place a triangle">Tri</button>
+      <button type="button" class="ptool" id="addLine" title="Drag to draw a line">Line</button>
+      <button type="button" class="ptool" id="addArrow" title="Drag to draw an arrow">Arrow</button>
+      <button type="button" class="ptool" id="toolConnect" title="Connect one object to another">Connect</button>
+      <button type="button" class="ptool" id="addImage" title="Upload an image">Image</button>
+      <input type="file" id="fileInput" accept="image/png,image/jpeg,image/webp,image/gif" class="hidden" aria-label="Upload image" title="Upload image">
+    </div>
+
+    <!-- Floating text styling popover (positioned above the selected text) -->
+    <div class="text-popover hidden" id="textPopover">
+      <select id="fontFamily" title="Font family">
+        <option value="system-ui, sans-serif">Sans</option>
+        <option value="Georgia, serif">Serif</option>
+        <option value="'Courier New', monospace">Mono</option>
+        <option value="'Brush Script MT', cursive">Script</option>
+        <option value="Impact, sans-serif">Impact</option>
+      </select>
+      <input type="number" id="fontSize" min="6" max="400" value="36" title="Font size">
+      <button type="button" class="tool" id="boldBtn" title="Bold"><b>B</b></button>
+      <button type="button" class="tool" id="italicBtn" title="Italic"><i>I</i></button>
+      <button type="button" class="tool" id="underlineBtn" title="Underline"><u>U</u></button>
+      <button type="button" class="icon" id="alignBtn" title="Text align">Left</button>
+      <button type="button" class="tool" id="bulletBtn" title="Bulleted list">&bull;</button>
+      <button type="button" class="tool" id="numberBtn" title="Numbered list">1.</button>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <!-- Fabric.js: vendored, with CDN fallback -->
+  <script src="assets/vendor/fabric.min.js"></script>
+  <script>
+    window.fabric || document.write(
+      '<script src="https://cdn.jsdelivr.net/npm/fabric@5.3.0/dist/fabric.min.js"><\/script>');
+  </script>
+  <script src="assets/editor.js"></script>
+</body>
+</html>

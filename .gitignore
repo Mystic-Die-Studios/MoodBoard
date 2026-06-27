@@ -1,0 +1,15 @@
+# Local + production config (contain the passcode hash) — never commit
+public_html/config.php
+public_html/config.local.php
+
+# User data + uploads — runtime state, never overwrite on deploy
+public_html/data/boards/
+public_html/uploads/
+
+# Local context doc for a different project — keep out of this repo
+HANDOFF.md
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.log
