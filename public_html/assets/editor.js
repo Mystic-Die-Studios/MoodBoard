@@ -243,7 +243,9 @@
   let idSeq = 0;
   const genId = () => 'o' + (++idSeq) + '_' + Math.floor(Math.random() * 1e6);
   function ensureId(o) { if (o && !o.id) o.id = genId(); }
-  canvas.on('object:added', (e) => ensureId(e.target));
+  // Text resizes by wrap width only — hide the font-scaling handles (corners + top/bottom).
+  function lockTextScale(o) { if (o && o.type === 'textbox') o.setControlsVisibility({ tl: false, tr: false, bl: false, br: false, mt: false, mb: false }); }
+  canvas.on('object:added', (e) => { ensureId(e.target); lockTextScale(e.target); });
   const byId = (id) => canvas.getObjects().find((o) => o.id === id);
   const isArrow = (o) => o && o.type === 'arrow';
 
@@ -572,7 +574,7 @@
         if (p.x < r.left || p.x > r.left + r.width || p.y < r.top || p.y > r.top + r.height) return false;
         try { return !canvas.isTargetTransparent(o, opt.e.offsetX, opt.e.offsetY); } catch (_) { return true; }
       });
-    if (hits.length) { hits.forEach((o) => canvas.remove(o)); eraseChanged = true; canvas.requestRenderAll(); }
+    if (hits.length) { suppress = true; hits.forEach((o) => canvas.remove(o)); suppress = false; eraseChanged = true; canvas.requestRenderAll(); }
   }
   $('#brushType').addEventListener('change', (e) => { brushType = e.target.value; if (!eraseMode) applyBrush(); updateBrushPopup(); });
 
@@ -867,9 +869,18 @@
     hi = history.length - 1;
     scheduleSave(); updateHistButtons();
   }
+  // Re-apply properties that Fabric doesn't reconstruct from JSON (lock flags, image
+  // filters, text-scale lock). Run after every load and undo/redo so states stay consistent.
+  function normalizeObjects() {
+    canvas.getObjects().forEach((o) => {
+      if (o.locked) applyLock(o, true);
+      lockTextScale(o);
+      if (isImage(o) && o.filters && o.filters.length) o.applyFilters();
+    });
+  }
   function loadState(json) {
     suppress = true;
-    canvas.loadFromJSON(json, () => { updateAllArrows(); canvas.renderAll(); suppress = false; updateHistButtons(); });
+    canvas.loadFromJSON(json, () => { normalizeObjects(); updateAllArrows(); canvas.renderAll(); suppress = false; updateHistButtons(); });
   }
   function undo() { if (hi > 0) { hi--; loadState(history[hi]); scheduleSave(); } }
   function redo() { if (hi < history.length - 1) { hi++; loadState(history[hi]); scheduleSave(); } }
@@ -877,7 +888,9 @@
     $('#undoBtn').disabled = hi <= 0;
     $('#redoBtn').disabled = hi >= history.length - 1;
   }
-  canvas.on('object:added', snapshot);
+  // Brush strokes (path / spray group) snapshot once via path:created (after styling),
+  // so skip them here to avoid a second, premature history entry.
+  canvas.on('object:added', (e) => { const t = e.target; if (t && (t.type === 'path' || t.type === 'group')) return; snapshot(); });
   canvas.on('object:removed', snapshot);
   canvas.on('object:modified', snapshot);
   canvas.on('path:created', onPathCreated);
@@ -1064,10 +1077,16 @@
     if (!document.fonts || !document.fonts.load) return Promise.resolve();
     return Promise.all([document.fonts.load('24px "' + name + '"'), document.fonts.load('bold 24px "' + name + '"')]).catch(() => {});
   }
+  function remeasureText() {
+    // Re-wrap/-size text boxes once the real font metrics are available (otherwise the
+    // box is sized for the fallback font and the loaded font overflows its bounds).
+    canvas.getObjects().forEach((o) => { if (isText(o) && o.initDimensions) { o.initDimensions(); o.setCoords(); } });
+    canvas.requestRenderAll();
+  }
   function ensureBoardFonts() {
     const fams = new Set();
     canvas.getObjects().forEach((o) => { if (isText(o) && o.fontFamily) fams.add(o.fontFamily); });
-    return Promise.all([...fams].map(ensureFont)).then(() => canvas.requestRenderAll());
+    return Promise.all([...fams].map(ensureFont)).then(remeasureText);
   }
 
   $('#fontFamily').addEventListener('change', (e) => {
@@ -1075,7 +1094,7 @@
     if (r) r.o.setSelectionStyles({ fontFamily: css }, r.start, r.end);
     else activeTexts().forEach((o) => o.set('fontFamily', css));
     canvas.requestRenderAll();
-    ensureFont(css).then(() => { canvas.requestRenderAll(); snapshot(); updatePopover(); });
+    ensureFont(css).then(() => { activeTexts().forEach((o) => { o.initDimensions && o.initDimensions(); o.setCoords(); }); canvas.requestRenderAll(); snapshot(); updatePopover(); });
   });
   $('#fontSize').addEventListener('input', (e) => {
     const n = Math.min(400, Math.max(6, parseInt(e.target.value, 10) || 36)), r = textRange();
@@ -1181,7 +1200,7 @@
   let renumbering = false;
   canvas.on('text:changed', (e) => {
     const o = e.target;
-    if (o && hasListLines(o) && !renumbering) { renumbering = true; try { renumber(o); } finally { renumbering = false; } canvas.requestRenderAll(); }
+    if (o && hasListLines(o) && !renumbering && !suppress) { renumbering = true; try { renumber(o); } finally { renumbering = false; } canvas.requestRenderAll(); }
   });
   // Enter / Backspace / Tab while editing a list line (capture-phase, before Fabric).
   document.addEventListener('keydown', (e) => {
@@ -1734,16 +1753,7 @@
       $('#title').value = b.title || 'Untitled';
       document.title = (b.title || 'MoodBoard') + ' — MoodBoard';
       const done = () => {
-        // Re-apply lock flags and image filters that aren't reconstructed automatically.
-        canvas.getObjects().forEach((o) => {
-          if (o.locked) applyLock(o, true);
-          if (isText(o) && !o.listType) {
-            const first = String(o.text || '').split('\n').find((l) => l.trim()) || '';
-            if (/^•\s/.test(first)) o.listType = 'bullet';
-            else if (/^\d+\.\s/.test(first)) o.listType = 'number';
-          }
-          if (isImage(o) && o.filters && o.filters.length) o.applyFilters();
-        });
+        normalizeObjects();
         canvas.renderAll(); suppress = false;
         history = [serialize()]; hi = 0; updateHistButtons();
         dirty = false; setStatus('Saved'); fitToContent();
@@ -1762,6 +1772,7 @@
 
   $('#sizeVal').textContent = $('#size').value;
   applyIcons(); buildFonts(); buildSwatches(); buildNoteSwatches();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(remeasureText); // re-fit text once all fonts load
   updateZoomLabel(); updateHistButtons(); setActiveTool('select'); updateContextButtons(); updateTopBar();
   load();
 })();
