@@ -1010,6 +1010,7 @@
   }
   // Rich text: when a glyph range is selected while editing, style only that range; else whole object(s).
   let lastTextSel = null; // last non-empty char selection (so right-click can style it)
+  let lastCaret = null;   // last caret/selection (collapsed ok) for per-line list ops
   function editingTextRange() {
     const o = canvas.getActiveObject();
     return (o && isText(o) && o.isEditing && o.selectionStart !== o.selectionEnd) ? o : null;
@@ -1034,8 +1035,12 @@
     return o && o[prop] !== undefined ? o[prop] : fallback;
   }
   // Track the character selection; options no longer auto-open (right-click instead).
-  canvas.on('text:selection:changed', (e) => { const o = e.target; if (o && o.selectionStart !== o.selectionEnd) lastTextSel = { obj: o, start: o.selectionStart, end: o.selectionEnd }; });
-  canvas.on('text:editing:entered', () => { lastTextSel = null; });
+  canvas.on('text:selection:changed', (e) => {
+    const o = e.target; if (!o) return;
+    lastCaret = { obj: o, start: o.selectionStart, end: o.selectionEnd };
+    if (o.selectionStart !== o.selectionEnd) lastTextSel = { obj: o, start: o.selectionStart, end: o.selectionEnd };
+  });
+  canvas.on('text:editing:entered', (e) => { lastTextSel = null; const o = e.target; if (o) lastCaret = { obj: o, start: o.selectionStart, end: o.selectionEnd }; });
   // Inject the Google Fonts stylesheet and populate the font picker.
   function buildFonts() {
     const fams = FONTS.filter((f) => f.g).map((f) => 'family=' + f.g.replace(/ /g, '+') + (f.w ? ':wght@400;700' : ''));
@@ -1088,124 +1093,106 @@
     applyText('textAlign', order[(order.indexOf(objs[0].textAlign || 'left') + 1) % order.length]);
   });
 
-  // ---- list engine (per-line markers, indent levels) -------------------------
-  // A text carries listType ('bullet'|'number'). Each line may be a list item
-  // (indent + marker + ' ' + content). Markers/numbers are kept in sync as you type;
-  // Enter continues, Enter-on-empty / Backspace-at-start exits, Tab indents.
+  // ---- list engine — per line, style-preserving (insertChars/removeChars) -----
+  // Markers live in the text (indent + marker + ' '), but EVERY mutation goes through
+  // Fabric's insertChars/removeChars so per-character styles shift correctly (never
+  // corrupted). Lists apply to the caret line / selected lines only.
   const INDENT = '    ';
-  const isListType = (o, type) => o.listType === type;
-  function parseLine(l) {
-    const m = l.match(/^( *)(•|◦|▪|\d+\.) (.*)$/);
-    if (m) return { isList: true, level: Math.floor(m[1].length / INDENT.length), marker: m[2], content: m[3], contentStart: m[1].length + m[2].length + 1 };
-    return { isList: false, level: 0, content: l, contentStart: 0 };
-  }
+  const LINE_MARK = /^( *)(•|◦|▪|\d+\.) (.*)$/;
   const bulletFor = (lvl) => ['•', '◦', '▪'][lvl % 3];
-  function setEditingText(o, newText, newSel) {
-    o.set('text', newText);
-    o.initDimensions && o.initDimensions(); o._clearCache && o._clearCache();
-    if (o.isEditing) {
-      o.selectionStart = o.selectionEnd = newSel;
-      if (o.hiddenTextarea) { o.hiddenTextarea.value = newText; try { o.hiddenTextarea.selectionStart = o.hiddenTextarea.selectionEnd = newSel; } catch (_) {} }
-      o.renderCursorOrSelection && o.renderCursorOrSelection();
-    }
-    o.dirty = true; canvas.requestRenderAll();
+  function parseLine(text) {
+    const m = text.match(LINE_MARK);
+    if (m) return { isList: true, indentLen: m[1].length, level: Math.floor(m[1].length / INDENT.length), marker: m[2], markerType: /^\d/.test(m[2]) ? 'number' : 'bullet', markerLen: m[2].length, prefixLen: m[1].length + m[2].length + 1, content: m[3] };
+    const lead = (text.match(/^ */) || [''])[0];
+    return { isList: false, indentLen: lead.length, level: Math.floor(lead.length / INDENT.length), prefixLen: lead.length, content: text.slice(lead.length) };
   }
-  function currentLine(o) {
-    const text = String(o.text || ''), sel = o.selectionStart || 0, lines = text.split('\n');
-    let acc = 0;
+  function logicalLines(o) { const a = []; let pos = 0; String(o.text || '').split('\n').forEach((p) => { a.push({ start: pos, len: p.length, text: p }); pos += p.length + 1; }); return a; }
+  function caretRange(o) {
+    if (o.isEditing) return { s: o.selectionStart || 0, e: o.selectionEnd != null ? o.selectionEnd : (o.selectionStart || 0) };
+    if (lastCaret && lastCaret.obj === o) return { s: lastCaret.start, e: lastCaret.end };
+    return { s: 0, e: String(o.text || '').length };
+  }
+  function lineSpan(lines, s, e) { let first = 0, last = 0; for (let i = 0; i < lines.length; i++) { if (s >= lines[i].start) first = i; if (e >= lines[i].start) last = i; } return { first, last }; }
+  const hasListLines = (o) => isText(o) && /^( *)(?:•|◦|▪|\d+\.) /m.test(String(o.text || ''));
+  function syncCaret(o, sel) {
+    if (!o.isEditing) return;
+    const t = String(o.text || ''); sel = Math.max(0, Math.min(sel, t.length));
+    o.selectionStart = o.selectionEnd = sel;
+    if (o.hiddenTextarea) { o.hiddenTextarea.value = t; try { o.hiddenTextarea.selectionStart = o.hiddenTextarea.selectionEnd = sel; } catch (_) {} }
+    o.renderCursorOrSelection && o.renderCursorOrSelection();
+  }
+  // Renumber number markers / normalize bullet glyph per level — only where a marker
+  // actually differs (so normal typing is a no-op and never disturbs styles).
+  function renumber(o) {
+    const lines = logicalLines(o), counters = [], want = [];
     for (let i = 0; i < lines.length; i++) {
-      if (sel <= acc + lines[i].length) return { lines, idx: i, col: sel - acc, lineStart: acc, p: parseLine(lines[i]) };
-      acc += lines[i].length + 1;
-    }
-    const i = lines.length - 1;
-    return { lines, idx: i, col: lines[i].length, lineStart: acc - (lines[i].length + 1), p: parseLine(lines[i]) };
-  }
-  // Re-marker / renumber every list line (per indent level); leave non-list lines alone.
-  function reformatList(o) {
-    const type = o.listType || 'bullet';
-    const text = String(o.text || ''), editing = !!o.isEditing, sel = editing ? (o.selectionStart || 0) : 0;
-    const lines = text.split('\n');
-    let acc = 0, cur = 0, curCol = 0;
-    for (let i = 0; i < lines.length; i++) { if (sel <= acc + lines[i].length) { cur = i; curCol = sel - acc; break; } acc += lines[i].length + 1; cur = i; curCol = lines[i].length; }
-    const counters = []; let pos = 0, newSel = sel, changed = false;
-    const out = lines.map((l, i) => {
-      const p = parseLine(l);
-      if (!p.isList) { for (let k = 0; k < counters.length; k++) counters[k] = 0; if (i === cur) newSel = pos + curCol; pos += l.length + 1; return l; }
+      const p = parseLine(lines[i].text);
+      if (!p.isList) { for (let k = 0; k < counters.length; k++) counters[k] = 0; want.push(null); continue; }
       for (let k = p.level + 1; k < counters.length; k++) counters[k] = 0;
-      let marker;
-      if (type === 'number') { counters[p.level] = (counters[p.level] || 0) + 1; marker = counters[p.level] + '.'; }
-      else marker = bulletFor(p.level);
-      const indent = INDENT.repeat(p.level), nl = indent + marker + ' ' + p.content;
-      if (i === cur) newSel = pos + (indent.length + marker.length + 1) + Math.max(0, curCol - p.contentStart);
-      if (nl !== l) changed = true;
-      pos += nl.length + 1; return nl;
-    });
-    if (!changed) return;
-    setEditingText(o, out.join('\n'), editing ? newSel : 0);
-  }
-  function changeIndent(o, delta) {
-    const c = currentLine(o); if (!c.p.isList) return;
-    const lvl = Math.max(0, c.p.level + delta), indent = INDENT.repeat(lvl);
-    const lines = c.lines.slice(); lines[c.idx] = indent + c.p.marker + ' ' + c.p.content;
-    const newSel = c.lineStart + indent.length + c.p.marker.length + 1 + Math.max(0, c.col - c.p.contentStart);
-    setEditingText(o, lines.join('\n'), newSel); reformatList(o);
-  }
-  function continueList(o) {
-    const c = currentLine(o), indent = INDENT.repeat(c.p.level);
-    const marker = o.listType === 'number' ? '1.' : bulletFor(c.p.level);
-    const prefix = '\n' + indent + marker + ' ';
-    const text = String(o.text || ''), sel = o.selectionStart || 0;
-    setEditingText(o, text.slice(0, sel) + prefix + text.slice(sel), sel + prefix.length); reformatList(o);
-  }
-  function clearMarker(o, keepContent) {
-    const c = currentLine(o), lines = c.lines.slice();
-    lines[c.idx] = keepContent ? c.p.content : '';
-    setEditingText(o, lines.join('\n'), c.lineStart); reformatList(o);
-  }
-  // Maintain markers on normal edits (typing/deletion that changes structure).
-  let reformatting = false;
-  canvas.on('text:changed', (e) => {
-    const o = e.target;
-    if (o && o.listType && !reformatting) { reformatting = true; try { reformatList(o); } finally { reformatting = false; } }
-  });
-  // Enter / Backspace / Tab behaviors while editing a list (capture-phase, before Fabric).
-  document.addEventListener('keydown', (e) => {
-    const o = canvas.getActiveObject();
-    if (!o || !isText(o) || !o.isEditing || !o.listType) return;
-    const c = currentLine(o);
-    if (e.key === 'Tab' && c.p.isList) {
-      e.preventDefault(); e.stopImmediatePropagation(); changeIndent(o, e.shiftKey ? -1 : 1); return;
+      if (p.markerType === 'number') { counters[p.level] = (counters[p.level] || 0) + 1; want.push(counters[p.level] + '.'); }
+      else want.push(bulletFor(p.level));
     }
-    if (e.key === 'Enter' && c.p.isList) {
-      e.preventDefault(); e.stopImmediatePropagation();
-      if (c.p.content.trim() === '') { if (c.p.level > 0) changeIndent(o, -1); else clearMarker(o, false); } // exit list on empty
-      else continueList(o);
-      return;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (want[i] == null) continue;
+      const cur = logicalLines(o)[i], p = parseLine(cur.text);
+      if (!p.isList || p.marker === want[i]) continue;
+      const mStart = cur.start + p.indentLen;
+      o.insertChars(want[i], undefined, mStart, mStart + p.markerLen);
     }
-    if (e.key === 'Backspace' && c.p.isList && c.col === c.p.contentStart && c.p.contentStart > 0) {
-      e.preventDefault(); e.stopImmediatePropagation();
-      if (c.p.level > 0) changeIndent(o, -1); else clearMarker(o, true); // kill list marker, keep text
-    }
-  }, true);
+    o.initDimensions && o.initDimensions(); o.dirty = true;
+  }
   function applyList(type) {
-    const objs = activeTexts(); if (!objs.length) return;
-    objs.forEach((o) => {
-      if (o.listType === type) { // toggle off → strip markers
-        o.listType = undefined;
-        o.set('text', String(o.text || '').split('\n').map((l) => { const p = parseLine(l); return p.isList ? p.content : l; }).join('\n'));
-        o.initDimensions && o.initDimensions();
-      } else {
-        o.listType = type;
-        o.set('text', String(o.text || '').split('\n').map((l) => {
-          const p = parseLine(l); if (p.isList) return l;
-          const lead = (l.match(/^ */) || [''])[0], content = l.slice(lead.length);
-          return content === '' ? l : lead + (type === 'number' ? '1.' : '•') + ' ' + content;
-        }).join('\n'));
-        o.initDimensions && o.initDimensions(); reformatList(o);
-      }
-    });
+    const o = canvas.getActiveObject(); if (!o || !isText(o)) return;
+    const r = caretRange(o), base = logicalLines(o), span = lineSpan(base, r.s, r.e);
+    let allType = true;
+    for (let i = span.first; i <= span.last; i++) { const p = parseLine(base[i].text); if (!(p.isList && p.markerType === type)) { allType = false; break; } }
+    for (let i = span.last; i >= span.first; i--) {
+      const ln = logicalLines(o)[i], p = parseLine(ln.text), mStart = ln.start + p.indentLen, nm = type === 'number' ? '1.' : '•';
+      if (allType) { if (p.isList) o.removeChars(mStart, mStart + p.markerLen + 1); }       // remove "marker "
+      else if (p.isList) o.insertChars(nm, undefined, mStart, mStart + p.markerLen);         // swap marker type
+      else if (ln.text.trim() !== '') o.insertChars(nm + ' ', undefined, mStart, mStart);    // add marker
+    }
+    renumber(o); syncCaret(o, o.selectionStart || 0);
     canvas.requestRenderAll(); snapshot(); updatePopover();
   }
+  const isListType = (o, type) => {
+    const r = caretRange(o), lines = logicalLines(o), span = lineSpan(lines, r.s, r.e);
+    for (let i = span.first; i <= span.last; i++) { const p = parseLine(lines[i].text); if (p.isList && p.markerType === type) return true; }
+    return false;
+  };
+  function continueList(o) {
+    const lines = logicalLines(o), sel = o.selectionStart || 0, p = parseLine(lines[lineSpan(lines, sel, sel).first].text);
+    const indent = ' '.repeat(p.indentLen), marker = p.markerType === 'number' ? '1.' : bulletFor(p.level);
+    o.insertChars('\n' + indent + marker + ' ', undefined, sel, sel);
+    renumber(o); syncCaret(o, sel + 1 + indent.length + marker.length + 1);
+  }
+  function exitOrOutdent(o) {
+    const lines = logicalLines(o), sel = o.selectionStart || 0, ln = lines[lineSpan(lines, sel, sel).first], p = parseLine(ln.text);
+    if (p.level > 0) { o.removeChars(ln.start, ln.start + INDENT.length); renumber(o); syncCaret(o, sel - INDENT.length); }
+    else { const mStart = ln.start + p.indentLen; o.removeChars(mStart, mStart + p.markerLen + 1); renumber(o); syncCaret(o, mStart); }
+  }
+  function indentLine(o, delta) {
+    const lines = logicalLines(o), sel = o.selectionStart || 0, ln = lines[lineSpan(lines, sel, sel).first], p = parseLine(ln.text);
+    if (!p.isList) return;
+    if (delta > 0) { o.insertChars(INDENT, undefined, ln.start, ln.start); renumber(o); syncCaret(o, sel + INDENT.length); }
+    else if (p.indentLen >= INDENT.length) { o.removeChars(ln.start, ln.start + INDENT.length); renumber(o); syncCaret(o, Math.max(ln.start, sel - INDENT.length)); }
+  }
+  // Keep numbering correct on ordinary typing/deletion (style-preserving, no-op if unchanged).
+  let renumbering = false;
+  canvas.on('text:changed', (e) => {
+    const o = e.target;
+    if (o && hasListLines(o) && !renumbering) { renumbering = true; try { renumber(o); } finally { renumbering = false; } canvas.requestRenderAll(); }
+  });
+  // Enter / Backspace / Tab while editing a list line (capture-phase, before Fabric).
+  document.addEventListener('keydown', (e) => {
+    const o = canvas.getActiveObject();
+    if (!o || !isText(o) || !o.isEditing) return;
+    const lines = logicalLines(o), sel = o.selectionStart || 0, ln = lines[lineSpan(lines, sel, sel).first], p = parseLine(ln.text);
+    if (!p.isList) return;
+    if (e.key === 'Tab') { e.preventDefault(); e.stopImmediatePropagation(); indentLine(o, e.shiftKey ? -1 : 1); canvas.requestRenderAll(); }
+    else if (e.key === 'Enter') { e.preventDefault(); e.stopImmediatePropagation(); if (p.content.trim() === '') exitOrOutdent(o); else continueList(o); canvas.requestRenderAll(); }
+    else if (e.key === 'Backspace' && sel === ln.start + p.prefixLen) { e.preventDefault(); e.stopImmediatePropagation(); exitOrOutdent(o); canvas.requestRenderAll(); }
+  }, true);
   $('#bulletBtn').addEventListener('click', () => applyList('bullet'));
   $('#numberBtn').addEventListener('click', () => applyList('number'));
   // Keep the text's character selection while clicking style buttons (don't steal focus),
